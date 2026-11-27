@@ -8998,15 +8998,11 @@ def request_with_fallback(method, url, headers=None, data=None, stream=False, no
     try:
         if check_internet():
             with requests.Session() as session:
-                response = session.request(method, url, headers=headers, data=data, stream=stream, timeout=timeout)
+                response = session.request(method, url, headers=headers, data=data, verify=True, stream=stream, timeout=timeout)
                 response.raise_for_status()
-    except requests.exceptions.SSLError:
-        print(f"⚠️ WARNING! Encountered SSL certification error while connecting to: {url}")
-        print("Retrying with SSL certificate verification disabled. ...")
-        print("For security, you should double check and make sure your system or communication is not compromised.")
-        if check_internet():
-            with requests.Session() as session:
-                response = session.request(method, url, headers=headers, data=data, verify=False, stream=stream, timeout=timeout)
+    except requests.exceptions.SSLError as err:
+        print(f"SSL certificate verification failed while connecting to: {url}")
+        print(f"The request was aborted to protect downloaded content: {err}")
     except requests.exceptions.HTTPError as err:
         print(f"HTTP error occurred: {err}")
     except requests.exceptions.Timeout:
