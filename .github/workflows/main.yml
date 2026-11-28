@@ -184,8 +184,16 @@ jobs:
     needs: check_artifacts
     # Only build if this specific artifact doesn't exist for this commit
     if: ${{ needs.check_artifacts.outputs.build_windows == 'true' }}
+    permissions:
+      actions: read
+      attestations: write
+      contents: read
+      id-token: write
     uses: ./.github/workflows/windows.yml
-    secrets: inherit
+    secrets:
+      CERTIFICATE: ${{ secrets.CERTIFICATE }}
+      CERT_PASSWORD: ${{ secrets.CERT_PASSWORD }}
+      CERTHASH: ${{ secrets.CERTHASH }}
 
   # build_windows_arm64:
   #   needs: check_artifacts

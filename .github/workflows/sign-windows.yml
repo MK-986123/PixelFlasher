@@ -1,0 +1,189 @@
+#
+# Copyright (C) 2026 Badabing2005
+# SPDX-FileCopyrightText: 2026 Badabing2005
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+
+name: Sign Windows artifact
+
+on:
+  workflow_call:
+    inputs:
+      unsigned_artifact_name:
+        required: true
+        type: string
+      executable_path:
+        required: true
+        type: string
+      signed_artifact_name:
+        required: true
+        type: string
+      description:
+        required: true
+        type: string
+      hash_format:
+        required: false
+        type: string
+        default: certutil
+    secrets:
+      certificate:
+        required: false
+      certificate_password:
+        required: false
+      certificate_sha1:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  sign_windows_artifact:
+    runs-on: windows-latest
+
+    permissions:
+      actions: read
+      contents: read
+
+    steps:
+      - name: Download unsigned artifact
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UNSIGNED_ARTIFACT_NAME: ${{ inputs.unsigned_artifact_name }}
+        run: |
+          gh run download "$env:GITHUB_RUN_ID" `
+            --repo "$env:GITHUB_REPOSITORY" `
+            --name "$env:UNSIGNED_ARTIFACT_NAME" `
+            --dir dist
+
+      - name: Sign Windows executable
+        # Pull-request builds remain unsigned because repository secrets are unavailable.
+        if: ${{ github.event_name != 'pull_request' }}
+        shell: pwsh
+        env:
+          SIGNING_CERTIFICATE: ${{ secrets.certificate }}
+          SIGNING_PASSWORD: ${{ secrets.certificate_password }}
+          SIGNING_CERTIFICATE_SHA1: ${{ secrets.certificate_sha1 }}
+          SIGNING_DESCRIPTION: ${{ inputs.description }}
+          EXECUTABLE_PATH: ${{ inputs.executable_path }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $certificatePath = Join-Path $env:RUNNER_TEMP "codesign-$([guid]::NewGuid()).pfx"
+          $importedCertificates = @()
+
+          try {
+            $certificateBytes = [Convert]::FromBase64String($env:SIGNING_CERTIFICATE)
+            [IO.File]::WriteAllBytes($certificatePath, $certificateBytes)
+
+            $securePassword = ConvertTo-SecureString $env:SIGNING_PASSWORD -AsPlainText -Force
+            # Import-PfxCertificate keeps the private key non-exportable unless -Exportable is supplied.
+            $importedCertificates = @(
+              Import-PfxCertificate `
+                -FilePath $certificatePath `
+                -CertStoreLocation Cert:\CurrentUser\My `
+                -Password $securePassword
+            )
+            $signingCertificate = $importedCertificates |
+              Where-Object { $_.HasPrivateKey } |
+              Select-Object -First 1
+            if (-not $signingCertificate) {
+              throw 'The signing certificate does not contain a private key.'
+            }
+
+            $expectedThumbprint = ($env:SIGNING_CERTIFICATE_SHA1 -replace '\s', '').ToUpperInvariant()
+            $actualThumbprint = ($signingCertificate.Thumbprint -replace '\s', '').ToUpperInvariant()
+            if (-not $expectedThumbprint -or $actualThumbprint -ne $expectedThumbprint) {
+              throw 'The imported signing certificate does not match the configured thumbprint.'
+            }
+
+            $target = Join-Path $env:GITHUB_WORKSPACE $env:EXECUTABLE_PATH
+            if (-not (Test-Path -LiteralPath $target -PathType Leaf)) {
+              throw "Signing target not found: $target"
+            }
+
+            $signTool = Get-ChildItem `
+              "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
+              Sort-Object FullName -Descending |
+              Select-Object -First 1
+            if (-not $signTool) {
+              throw 'signtool.exe was not found in the Windows SDK.'
+            }
+
+            & $signTool.FullName sign `
+              /sha1 $actualThumbprint `
+              /fd SHA256 `
+              /tr 'http://timestamp.digicert.com' `
+              /td SHA256 `
+              /d $env:SIGNING_DESCRIPTION `
+              $target
+            if ($LASTEXITCODE -ne 0) {
+              throw "signtool.exe failed with exit code $LASTEXITCODE."
+            }
+          }
+          finally {
+            foreach ($certificate in $importedCertificates) {
+              Remove-Item `
+                -LiteralPath "Cert:\CurrentUser\My\$($certificate.Thumbprint)" `
+                -Force `
+                -ErrorAction SilentlyContinue
+            }
+            Remove-Item -LiteralPath $certificatePath -Force -ErrorAction SilentlyContinue
+            $certificateBytes = $null
+            $securePassword = $null
+          }
+
+      - name: Generate SHA256
+        shell: pwsh
+        env:
+          EXECUTABLE_PATH: ${{ inputs.executable_path }}
+          HASH_FORMAT: ${{ inputs.hash_format }}
+        run: |
+          $target = Join-Path $env:GITHUB_WORKSPACE $env:EXECUTABLE_PATH
+          $hashPath = "$target.sha256"
+
+          if ($env:HASH_FORMAT -eq 'certutil') {
+            certutil -hashfile $target SHA256 > $hashPath
+          }
+          elseif ($env:HASH_FORMAT -eq 'plain') {
+            (Get-FileHash $target -Algorithm SHA256).Hash > $hashPath
+          }
+          else {
+            throw "Unsupported hash format: $env:HASH_FORMAT"
+          }
+
+          Get-Content $hashPath
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.signed_artifact_name }}
+          path: |
+            ${{ inputs.executable_path }}
+            ${{ inputs.executable_path }}.sha256
+
+  attest_windows_artifact:
+    needs: sign_windows_artifact
+    runs-on: windows-latest
+
+    permissions:
+      actions: read
+      attestations: write
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Download Windows artifact
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SIGNED_ARTIFACT_NAME: ${{ inputs.signed_artifact_name }}
+        run: |
+          gh run download "$env:GITHUB_RUN_ID" `
+            --repo "$env:GITHUB_REPOSITORY" `
+            --name "$env:SIGNED_ARTIFACT_NAME" `
+            --dir dist
+
+      - name: Generate Artifact Attestation
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: ${{ inputs.executable_path }}
