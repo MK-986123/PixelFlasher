@@ -34,6 +34,13 @@ name: Build for Windows ARM64
 
 on:
   workflow_call:
+    secrets:
+      CERTIFICATE:
+        required: false
+      CERT_PASSWORD:
+        required: false
+      CERTHASH:
+        required: false
   workflow_dispatch:
     inputs:
       tags:
@@ -47,9 +54,7 @@ jobs:
     runs-on: windows-latest
 
     permissions:
-      id-token: write
-      attestations: write
-      contents: write
+      contents: read
 
     steps:
       - name: Checkout code
@@ -133,39 +138,28 @@ jobs:
             exit 1
           }
 
-      - name: Sign Windows ARM64 Executable
-        # Skip signing for pull requests as secrets aren't available
-        if: ${{ github.event_name != 'pull_request' }}
-        uses: skymatic/code-sign-action@v3
-        with:
-          certificate: '${{ secrets.CERTIFICATE }}'
-          password: '${{ secrets.CERT_PASSWORD }}'
-          certificatesha1: '${{ secrets.CERTHASH }}'
-          certificatename: '${{ secrets.CERTNAME }}'
-          description: 'PixelFlasher ARM64'
-          timestampUrl: 'http://timestamp.digicert.com'
-          folder: 'dist'
-          recursive: false
-
-      - name: Generate SHA256
-        shell: pwsh
-        run: |
-          Get-FileHash "dist/PixelFlasher-arm64.exe" -Algorithm SHA256 | Select-Object -ExpandProperty Hash > dist/PixelFlasher-arm64.exe.sha256
-          Get-Content dist/PixelFlasher-arm64.exe.sha256
-
-      - name: List contents of dist directory again
-        run: ls dist
-
-      - name: Generate Artifact Attestation
-        uses: actions/attest-build-provenance@v2
-        with:
-          subject-path: dist/PixelFlasher-arm64.exe
-
-      - name: Upload ARM64 Artifacts
+      - name: Upload unsigned ARM64 artifact
         uses: actions/upload-artifact@v7
         with:
-          name: PixelFlasher-ARM64.exe Artifacts
-          path: |
-            dist/PixelFlasher-arm64.exe
-            dist/PixelFlasher-arm64.exe.sha256
+          name: PixelFlasher-ARM64.exe Unsigned
+          path: dist/PixelFlasher-arm64.exe
+
+  sign_windows_arm64:
+    needs: build_windows_arm64
+    permissions:
+      actions: read
+      attestations: write
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/sign-windows.yml
+    with:
+      unsigned_artifact_name: PixelFlasher-ARM64.exe Unsigned
+      executable_path: dist/PixelFlasher-arm64.exe
+      signed_artifact_name: PixelFlasher-ARM64.exe Artifacts
+      description: PixelFlasher ARM64
+      hash_format: plain
+    secrets:
+      certificate: ${{ secrets.CERTIFICATE }}
+      certificate_password: ${{ secrets.CERT_PASSWORD }}
+      certificate_sha1: ${{ secrets.CERTHASH }}
 

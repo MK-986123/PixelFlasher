@@ -34,6 +34,13 @@ name: Build for Windows
 
 on:
   workflow_call:
+    secrets:
+      CERTIFICATE:
+        required: false
+      CERT_PASSWORD:
+        required: false
+      CERTHASH:
+        required: false
   workflow_dispatch:
     inputs:
       tags:
@@ -47,9 +54,7 @@ jobs:
     runs-on: windows-latest
 
     permissions:
-      id-token: write
-      attestations: write
-      contents: write
+      contents: read
 
     steps:
       - name: Checkout code
@@ -87,39 +92,27 @@ jobs:
       - name: List contents of dist directory
         run: ls dist
 
-      - name: Sign Windows Executable
-        # Skip signing for pull requests as secrets aren't available
-        if: ${{ github.event_name != 'pull_request' }}
-        uses: skymatic/code-sign-action@v3
-        with:
-          certificate: '${{ secrets.CERTIFICATE }}'
-          password: '${{ secrets.CERT_PASSWORD }}'
-          certificatesha1: '${{ secrets.CERTHASH }}'
-          certificatename: '${{ secrets.CERTNAME }}'
-          description: 'PixelFlasher'
-          timestampUrl: 'http://timestamp.digicert.com'
-          folder: 'dist'
-          recursive: false
-
-      - name: Get sha256
-        run: |
-          certutil -hashfile dist/PixelFlasher.exe SHA256 > dist/PixelFlasher.exe.sha256
-          cat dist/PixelFlasher.exe.sha256
-
-      - name: List contents of dist directory again
-        run: ls dist
-
-      - name: Generate Artifact Attestation
-        uses: actions/attest-build-provenance@v2
-        with:
-          subject-path: dist/PixelFlasher.exe
-
-      # Upload artifacts Windows
-      - name: Upload Windows Artifact
+      - name: Upload unsigned Windows artifact
         uses: actions/upload-artifact@v7
-        id: upload_artifacts_windows
         with:
-          name: PixelFlasher.exe Artifacts
-          path: |
-            dist/PixelFlasher.exe
-            dist/PixelFlasher.exe.sha256
+          name: PixelFlasher.exe Unsigned
+          path: dist/PixelFlasher.exe
+
+  sign_windows:
+    needs: build_windows
+    permissions:
+      actions: read
+      attestations: write
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/sign-windows.yml
+    with:
+      unsigned_artifact_name: PixelFlasher.exe Unsigned
+      executable_path: dist/PixelFlasher.exe
+      signed_artifact_name: PixelFlasher.exe Artifacts
+      description: PixelFlasher
+      hash_format: certutil
+    secrets:
+      certificate: ${{ secrets.CERTIFICATE }}
+      certificate_password: ${{ secrets.CERT_PASSWORD }}
+      certificate_sha1: ${{ secrets.CERTHASH }}
